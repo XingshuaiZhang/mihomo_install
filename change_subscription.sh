@@ -41,7 +41,7 @@ detect_install_dir() {
   return 1
 }
 
-INSTALL_DIR="${INSTALL_DIR:-$(detect_install_dir)}"
+INSTALL_DIR="${INSTALL_DIR:-$(detect_install_dir || true)}"
 
 if [[ ! -d "$INSTALL_DIR" ]]; then
   err "无法找到 mihomo 安装目录"
@@ -80,7 +80,7 @@ info "检测到 mihomo 安装目录: $INSTALL_DIR"
 echo
 
 echo "当前订阅链接："
-grep -A2 'proxy-providers:' "$CONFIG" | grep 'url:' | head -1 | sed 's/^[[:space:]]*/  /'
+grep -A10 'proxy-providers:' "$CONFIG" | grep 'url:' | head -1 | sed 's/^[[:space:]]*/  /' || echo "  (未找到订阅链接)"
 echo
 
 read -r -p "请输入新的订阅链接: " NEW_URL
@@ -94,8 +94,8 @@ else
   warn "⚠ 警告：订阅链接可能无法访问，但继续执行..."
 fi
 
-# 转义特殊字符
-ESCAPED_URL=$(printf '%s' "$NEW_URL" | sed 's/"/\\"/g')
+# 转义 sed 替换部分的特殊字符：\ & |（分隔符）
+ESCAPED_URL=$(printf '%s' "$NEW_URL" | sed 's/\\/\\\\/g; s/&/\\&/g; s/|/\\|/g')
 
 # 备份配置
 BACKUP_FILE="$CONFIG.backup.$(date +%Y%m%d_%H%M%S)"
@@ -121,6 +121,12 @@ sleep 2
 "$RUN_SH" >/dev/null 2>&1 &
 
 sleep 3
+
+if pgrep -f "mihomo -d" >/dev/null 2>&1; then
+  info "✓ mihomo 已成功启动"
+else
+  warn "⚠ mihomo 可能未能正常启动，请检查日志: tail -f $INSTALL_DIR/run/mihomo.log"
+fi
 
 echo
 echo "========================================="
