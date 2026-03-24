@@ -607,8 +607,9 @@ echo "  或设置代理后："
 echo "  curl https://api.ipify.org"
 echo
 echo "【快速切换节点】"
-echo "  通过 yacd 界面可以方便地切换节点"
-echo "  支持节点延迟测试和自动选择最快节点"
+echo "  命令行测速并切换： bash ~/tools/mihomo_install/nodes.sh"
+echo "  注册快捷命令后可直接执行： mihomo-nodes"
+echo "  也可以继续使用 yacd 界面切换节点"
 echo
 echo "【订阅更新】"
 echo "  订阅会每小时自动更新"
