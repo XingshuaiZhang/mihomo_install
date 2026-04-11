@@ -230,11 +230,24 @@ mkdir -p "$BIN_DIR" "$RUN_DIR" "$PROV_DIR"
 ARCH="$(detect_arch)"
 info "检测到架构：$ARCH"
 
+# 自动获取最新版本号
+info "正在获取 mihomo 最新版本号…"
+MIHOMO_LATEST_VERSION=""
+for api_url in \
+  "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" \
+  "https://cdn.jsdelivr.net/gh/MetaCubeX/mihomo@latest/README.md"; do
+  MIHOMO_LATEST_VERSION="$(curl -fsSL --connect-timeout 8 --max-time 15 "$api_url" 2>/dev/null | grep -oP 'v\d+\.\d+\.\d+' | head -1)" && break
+done
+
+if [[ -z "${MIHOMO_LATEST_VERSION}" ]]; then
+  warn "无法自动获取最新版本号，将使用 v1.19.23"
+  MIHOMO_LATEST_VERSION="v1.19.23"
+fi
+info "最新版本：${MIHOMO_LATEST_VERSION}"
+
 # 备用下载源列表（国内镜像）
 MIRROR_SOURCES=(
-  "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.10/mihomo-linux-${ARCH}-v1.18.10.gz"
-  "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.9/mihomo-linux-${ARCH}-v1.18.9.gz"
-  "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.8/mihomo-linux-${ARCH}-v1.18.8.gz"
+  "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_LATEST_VERSION}/mihomo-linux-${ARCH}-${MIHOMO_LATEST_VERSION}.gz"
 )
 
 # 尝试方法1: 使用GitHub代理解析最新版本
@@ -263,9 +276,8 @@ fi
 
 # 尝试方法2: 使用jsDelivr CDN（国内访问友好）
 if ! $DOWNLOAD_SUCCESS; then
-  info "尝试方法2：使用jsDelivr CDN下载固定版本…"
-  VERSION="v1.18.10"
-  CDN_URL="https://cdn.jsdelivr.net/gh/MetaCubeX/mihomo@${VERSION}/mihomo-linux-${ARCH}.gz"
+  info "尝试方法2：使用jsDelivr CDN下载…"
+  CDN_URL="https://cdn.jsdelivr.net/gh/MetaCubeX/mihomo@${MIHOMO_LATEST_VERSION}/mihomo-linux-${ARCH}.gz"
 
   info "CDN链接：$CDN_URL"
   if curl_get "$CDN_URL" "$TMP_MI" 2>/dev/null; then

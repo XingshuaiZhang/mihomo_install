@@ -27,6 +27,7 @@ ensure_entry() {
 added=false
 ensure_entry "# mihomo quick command" 'mihomo() { source ~/tools/mihomo_install/quick_start.sh; }' && added=true || true
 ensure_entry "# mihomo nodes command" "alias mihomo-nodes='bash ~/tools/mihomo_install/nodes.sh'" && added=true || true
+ensure_entry "# mihomo upgrade command" "alias mihomo-upgrade='bash ~/tools/mihomo_install/upgrade.sh'" && added=true || true
 
 if $added; then
   info "mihomo 命令注册成功！"
@@ -39,3 +40,4 @@ echo "  1. 执行: source ~/.bashrc"
 echo "  2. 或重新打开终端"
 echo "  3. 输入: mihomo"
 echo "  4. 输入: mihomo-nodes"
+echo "  5. 输入: mihomo-upgrade"
