@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# Residential installations use an exit check that never retries outside the proxy.
+MIHOMO_DIR="${INSTALL_DIR:-${HOME}/tools/mihomo}"
+if [[ -f "$MIHOMO_DIR/residential-source.yaml" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec bash "$SCRIPT_DIR/residential.sh" --install-dir "$MIHOMO_DIR" verify "$@"
+fi
+
 # 颜色定义
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -71,7 +78,6 @@ echo
 # 检查 mihomo 状态
 info "=== 检查 mihomo 状态 ==="
 echo
-MIHOMO_DIR="${HOME}/tools/mihomo"
 if [[ -d "$MIHOMO_DIR" ]]; then
   if pgrep -f "mihomo -d.*$MIHOMO_DIR" >/dev/null 2>&1; then
     success "Mihomo 正在运行"

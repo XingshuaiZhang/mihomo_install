@@ -54,6 +54,10 @@ if [[ ! -d "$INSTALL_DIR" ]]; then
 fi
 
 CONFIG="$INSTALL_DIR/config.yaml"
+if [[ -f "$INSTALL_DIR/residential-source.yaml" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec bash "$SCRIPT_DIR/residential.sh" --install-dir "$INSTALL_DIR" subscription "$@"
+fi
 PROV_DIR="$INSTALL_DIR/providers"
 STOP_SH="$INSTALL_DIR/stop.sh"
 RUN_SH="$INSTALL_DIR/run.sh"

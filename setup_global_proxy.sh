@@ -17,6 +17,8 @@ TOGGLE_FILE="${SCRIPT_DIR}/proxy_toggle.sh"
 BEGIN_MARK="# >>> mihomo-proxy >>>"
 END_MARK="# <<< mihomo-proxy <<<"
 VSCODE_SETTINGS="${HOME}/.vscode-server/data/Machine/settings.json"
+MIHOMO_PROXY_URL="${MIHOMO_PROXY_URL:-http://127.0.0.1:7890}"
+MIHOMO_SOCKS_URL="${MIHOMO_SOCKS_URL:-socks5h://127.0.0.1:7890}"
 
 ACTION="install"
 if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
@@ -50,7 +52,9 @@ inject_block_top() {
     tmp="$(mktemp)"
     {
         echo "$BEGIN_MARK"
-        echo "[ -f \"$TOGGLE_FILE\" ] && . \"$TOGGLE_FILE\""
+        printf 'export MIHOMO_PROXY_URL=%q\n' "$MIHOMO_PROXY_URL"
+        printf 'export MIHOMO_SOCKS_URL=%q\n' "$MIHOMO_SOCKS_URL"
+        printf '[ -f %q ] && . %q\n' "$TOGGLE_FILE" "$TOGGLE_FILE"
         echo "$END_MARK"
         echo
         cat "$file"
@@ -64,18 +68,11 @@ update_vscode_settings() {
     local file="$VSCODE_SETTINGS"
     mkdir -p "$(dirname "$file")"
     if [[ ! -f "$file" ]]; then
-        cat > "$file" <<'JSON'
-{
-    "http.proxy": "http://127.0.0.1:7890",
-    "http.proxyStrictSSL": false,
-    "http.proxySupport": "on"
-}
-JSON
-        echo "  已创建 $file"
-        return
+        printf '{}\n' > "$file"
+    else
+        cp "$file" "${file}.bak.$(date +%Y%m%d_%H%M%S)"
     fi
-    cp "$file" "${file}.bak.$(date +%Y%m%d_%H%M%S)"
-    python3 - "$file" <<'PY'
+    "${MIHOMO_PYTHON:-python3}" - "$file" "$MIHOMO_PROXY_URL" <<'PY'
 import json, re, sys, pathlib
 p = pathlib.Path(sys.argv[1])
 raw = p.read_text(encoding="utf-8")
@@ -91,7 +88,7 @@ except json.JSONDecodeError as e:
 if not isinstance(data, dict):
     print("  settings.json 顶层不是对象，已跳过", file=sys.stderr)
     sys.exit(1)
-data["http.proxy"] = "http://127.0.0.1:7890"
+data["http.proxy"] = sys.argv[2]
 data["http.proxyStrictSSL"] = False
 data["http.proxySupport"] = "on"
 p.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -104,7 +101,7 @@ remove_vscode_proxy_keys() {
     local file="$VSCODE_SETTINGS"
     [[ -f "$file" ]] || return 0
     cp "$file" "${file}.bak.$(date +%Y%m%d_%H%M%S)"
-    python3 - "$file" <<'PY'
+    "${MIHOMO_PYTHON:-python3}" - "$file" <<'PY'
 import json, re, sys, pathlib
 p = pathlib.Path(sys.argv[1])
 raw = p.read_text(encoding="utf-8")

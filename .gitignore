@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+residential.json
+residential.local.json
+residential-source.yaml
+residential-subscription.yaml
+config.before-residential.yaml
+config.yaml
+config.setup-incomplete.yaml
+.residential-*
+/providers/
+/run/
+/bin/mihomo

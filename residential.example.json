@@ -1,0 +1,8 @@
+{
+  "server": "residential.example.com",
+  "port": 1080,
+  "username": "replace-with-your-username",
+  "password": "replace-with-your-password",
+  "udp": false,
+  "expected_exit_ip": "203.0.113.10"
+}

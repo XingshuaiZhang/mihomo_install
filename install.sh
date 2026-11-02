@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESIDENTIAL_INPUT_DIR=""
+cleanup_residential_input() {
+  if [[ -n "$RESIDENTIAL_INPUT_DIR" ]]; then
+    rm -rf -- "$RESIDENTIAL_INPUT_DIR"
+    RESIDENTIAL_INPUT_DIR=""
+  fi
+}
+trap cleanup_residential_input EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # =========================
 # Helpers
@@ -10,6 +22,28 @@ err()  { echo -e "\033[1;31m[ERR ]\033[0m $*"; }
 die()  { err "$*"; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "缺少依赖命令：$1"; }
+
+ask_yes_no() {
+  local answer
+  if ! read -r -p "$1" answer; then
+    err "没有读取到输入，安装已中止。" >&2
+    return 1
+  fi
+  case "${answer:-$2}" in
+    [Yy]|[Yy][Ee][Ss]) printf 'Y\n' ;;
+    [Nn]|[Nn][Oo]) printf 'N\n' ;;
+    *) err "请输入 y 或 n。" >&2; return 1 ;;
+  esac
+}
+
+prepare_python() {
+  source "$SCRIPT_DIR/python_env.sh"
+  if ! RESIDENTIAL_PYTHON="$(mihomo_python)"; then
+    bash "$SCRIPT_DIR/setup_python.sh" || die "用户目录 Python 环境准备失败，请检查上方提示后重试。"
+    RESIDENTIAL_PYTHON="$(mihomo_python)" || die "无法找到带 PyYAML 的 Python。"
+  fi
+  export MIHOMO_PYTHON="$RESIDENTIAL_PYTHON"
+}
 
 escape_yaml_double_quotes() { sed 's/"/\\"/g'; }
 
@@ -145,17 +179,45 @@ need_cmd grep
 need_cmd awk
 need_cmd sha256sum
 
-info "将安装 mihomo（无需 root），并输出 VSCode 端口转发 + yacd（浏览器端）使用指引。"
-info "说明：本脚本默认【不在服务器下载 yacd】；你在 Windows 本地访问 yacd 即可。"
+info "一键安装 / 配置 mihomo：依赖、住宅出口、启动、定时更新和出口验证（无需 sudo）。"
 echo
 
 # =========================
 # Interactive inputs
 # =========================
-default_dir="$HOME/tools/mihomo"
+default_dir="${INSTALL_DIR:-$HOME/tools/mihomo}"
 read -r -p "请输入安装目录（默认：${default_dir}）: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$default_dir}"
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+INSTALL_DIR="$(readlink -m -- "$INSTALL_DIR")"
+EXISTING_INSTALL=false
+if [[ -e "$INSTALL_DIR/config.yaml" ]]; then
+  [[ -x "$INSTALL_DIR/bin/mihomo" ]] || die "已有配置但缺少可执行的 bin/mihomo，请先修复该安装目录。"
+  EXISTING_INSTALL=true
+  info "检测到已有安装，将复用现有内核、订阅、端口和控制密钥。"
+fi
+
+USE_RESIDENTIAL=Y
+if [[ -n "${RESIDENTIAL_SETTINGS_FILE:-}" ]]; then
+  [[ -f "$RESIDENTIAL_SETTINGS_FILE" ]] || die "住宅配置文件不存在：$RESIDENTIAL_SETTINGS_FILE"
+elif [[ -f "$INSTALL_DIR/residential-source.yaml" ]]; then
+  info "已有住宅模式配置，将保留住宅出口。按后续提示回车可复用原参数。"
+else
+  USE_RESIDENTIAL="$(ask_yes_no '是否启用固定住宅 SOCKS5 出口？（Y/n）: ' Y)"
+fi
+prepare_python
+
+# Collect credentials before downloads; users never need to prepare a JSON file.
+if [[ "$USE_RESIDENTIAL" == Y && -z "${RESIDENTIAL_SETTINGS_FILE:-}" ]]; then
+  info "先设置住宅出口：粘贴 IP:端口@用户名:密码即可，无需准备配置文件。"
+  RESIDENTIAL_INPUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mihomo-residential.XXXXXXXX")"
+  RESIDENTIAL_SETTINGS_FILE="$RESIDENTIAL_INPUT_DIR/settings.json"
+  "$RESIDENTIAL_PYTHON" "$SCRIPT_DIR/residential.py" --install-dir "$INSTALL_DIR" \
+    collect-settings --output "$RESIDENTIAL_SETTINGS_FILE" || die "住宅参数输入已取消或保存失败。"
+  info "住宅参数已接收，接下来配置订阅并安装。"
+fi
+
+if [[ "$EXISTING_INSTALL" == false ]]; then
 
 read -r -p "请输入 Clash 订阅链接（可直接粘贴，包含 & 也没问题）: " SUB_URL
 [[ -n "${SUB_URL:-}" ]] || die "订阅链接不能为空。"
@@ -368,6 +430,55 @@ rules:
   - MATCH,PROXY
 EOF
 info "写入完成：$CONFIG"
+else
+  BIN_DIR="$INSTALL_DIR/bin"
+  RUN_DIR="$INSTALL_DIR/run"
+  PROV_DIR="$INSTALL_DIR/providers"
+  CONFIG="$INSTALL_DIR/config.yaml"
+  mkdir -p "$RUN_DIR"
+  INSTALL_META="$("$RESIDENTIAL_PYTHON" - "$CONFIG" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+config = yaml.safe_load(Path(sys.argv[1]).read_text())
+port = config.get('mixed-port') or config.get('port')
+if not port:
+    sys.exit('已有配置缺少 HTTP/mixed 端口')
+print(port)
+print(str(config.get('external-controller', '')).rsplit(':', 1)[-1])
+print(config.get('secret', ''))
+PY
+  )" || die "无法读取已有安装配置。"
+  mapfile -t INSTALL_META_LINES <<< "$INSTALL_META"
+  MIXED_PORT="${INSTALL_META_LINES[0]}"
+  CTRL_PORT="${INSTALL_META_LINES[1]}"
+  SECRET="${INSTALL_META_LINES[2]:-}"
+fi
+
+# Generate every residential chain before any service can start.
+if [[ "$USE_RESIDENTIAL" =~ ^[Yy]$ ]]; then
+  RESIDENTIAL_ARGS=(--install-dir "$INSTALL_DIR" configure)
+  if [[ -n "${RESIDENTIAL_SETTINGS_FILE:-}" ]]; then
+    RESIDENTIAL_ARGS+=(--settings-file "$RESIDENTIAL_SETTINGS_FILE")
+  fi
+  if ! bash "$SCRIPT_DIR/residential.sh" "${RESIDENTIAL_ARGS[@]}"; then
+    if [[ "$EXISTING_INSTALL" == false ]]; then
+      mv "$CONFIG" "$INSTALL_DIR/config.setup-incomplete.yaml"
+      die "住宅模式配置失败，未生成可启动的 config.yaml；排查后重新运行本脚本。"
+    fi
+    die "住宅模式配置失败，已有安装配置已保留；排查后重新运行本脚本。"
+  fi
+  cleanup_residential_input
+fi
+
+# Install a self-contained runtime helper with the verified Python interpreter.
+"$RESIDENTIAL_PYTHON" - "$SCRIPT_DIR" "$INSTALL_DIR" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import residential
+residential.copy_runtime_tool(Path(sys.argv[2]))
+PY
 
 # =========================
 # run.sh / stop.sh / status.sh / proxy.sh
@@ -381,40 +492,10 @@ cat > "$RUN_SH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="$(printf %q "$INSTALL_DIR")"
+INSTALL_DIR=$(printf %q "$INSTALL_DIR")
 BIN_DIR="\${INSTALL_DIR}/bin"
 RUN_DIR="\${INSTALL_DIR}/run"
-
-cd "\${INSTALL_DIR}"
-mkdir -p "\${RUN_DIR}"
-
-# 检查是否已在运行
-PID_FILE="\${RUN_DIR}/mihomo.pid"
-if [[ -f "\$PID_FILE" ]]; then
-  OLD_PID=\$(cat "\$PID_FILE" 2>/dev/null || echo "")
-  if [[ -n "\${OLD_PID}" ]] && kill -0 "\${OLD_PID}" >/dev/null 2>&1; then
-    echo "mihomo 已经在运行（pid=\${OLD_PID}）"
-    echo "如需重启，请先运行 ${INSTALL_DIR}/stop.sh"
-    exit 0
-  fi
-fi
-
-# 启动 mihomo
-nohup "\${BIN_DIR}/mihomo" -d "\${INSTALL_DIR}" > "\${RUN_DIR}/mihomo.log" 2>&1 &
-PID=\$!
-echo \$! > "\${PID_FILE}"
-
-echo "mihomo 启动成功"
-echo "PID: \${PID}"
-echo "日志: tail -f ${RUN_DIR}/mihomo.log"
-echo
-echo "代理地址："
-echo "  HTTP/SOCKS5: 127.0.0.1:${MIXED_PORT}"
-echo "  控制面板: 127.0.0.1:${CTRL_PORT}"
-echo
-echo "设置环境变量："
-echo "  export http_proxy=http://127.0.0.1:${MIXED_PORT}"
-echo "  export https_proxy=http://127.0.0.1:${MIXED_PORT}"
+exec $(printf %q "$RESIDENTIAL_PYTHON") "\${INSTALL_DIR}/residential.py" --install-dir "\${INSTALL_DIR}" start
 EOF
 chmod +x "$RUN_SH"
 
@@ -422,7 +503,7 @@ cat > "$STOP_SH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="$(printf %q "$INSTALL_DIR")"
+INSTALL_DIR=$(printf %q "$INSTALL_DIR")
 RUN_DIR="\${INSTALL_DIR}/run"
 PID_FILE="\${RUN_DIR}/mihomo.pid"
 
@@ -474,10 +555,10 @@ cat > "$PROXY_SH" <<EOF
 # 使用方法: source ${INSTALL_DIR}/proxy.sh
 export http_proxy=http://127.0.0.1:${MIXED_PORT}
 export https_proxy=http://127.0.0.1:${MIXED_PORT}
-export all_proxy=socks5://127.0.0.1:${MIXED_PORT}
+export all_proxy=socks5h://127.0.0.1:${MIXED_PORT}
 export HTTP_PROXY=http://127.0.0.1:${MIXED_PORT}
 export HTTPS_PROXY=http://127.0.0.1:${MIXED_PORT}
-export ALL_PROXY=socks5://127.0.0.1:${MIXED_PORT}
+export ALL_PROXY=socks5h://127.0.0.1:${MIXED_PORT}
 echo "代理环境变量已设置"
 echo "HTTP/SOCKS5: 127.0.0.1:${MIXED_PORT}"
 EOF
@@ -488,7 +569,7 @@ cat > "$STATUS_SH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="$(printf %q "$INSTALL_DIR")"
+INSTALL_DIR=$(printf %q "$INSTALL_DIR")
 RUN_DIR="\${INSTALL_DIR}/run"
 PID_FILE="\${RUN_DIR}/mihomo.pid"
 BIN_DIR="\${INSTALL_DIR}/bin"
@@ -536,94 +617,99 @@ echo "=========="
 EOF
 chmod +x "$STATUS_SH"
 
+UPDATE_METHOD="本次未配置（已有任务保留）"
+if [[ "$USE_RESIDENTIAL" =~ ^[Yy]$ ]]; then
+  USE_RESIDENTIAL_TIMER="$(ask_yes_no '是否启用每小时自动更新住宅代理链？（Y/n）: ' Y)"
+  if [[ "$USE_RESIDENTIAL_TIMER" == Y ]]; then
+    if bash "$SCRIPT_DIR/residential.sh" --install-dir "$INSTALL_DIR" timer-install; then
+      UPDATE_METHOD="用户 systemd（每小时）"
+    elif bash "$SCRIPT_DIR/residential.sh" --install-dir "$INSTALL_DIR" cron-install; then
+      UPDATE_METHOD="用户 crontab（每小时）"
+    else
+      warn "服务器未提供可用的用户定时任务；现有住宅配置可继续使用，订阅更新需手动执行。"
+    fi
+  fi
+else
+  UPDATE_METHOD="内核订阅更新（每小时）"
+fi
+
 # =========================
 # Optional systemd --user
 # =========================
 echo
-read -r -p "是否尝试创建 systemd --user 服务以便守护？（y/N）: " USE_SYSTEMD
-USE_SYSTEMD="${USE_SYSTEMD:-N}"
+USE_SYSTEMD="$(ask_yes_no '是否尝试创建 systemd --user 服务以便守护？（y/N）: ' N)"
 
 if [[ "$USE_SYSTEMD" =~ ^[Yy]$ ]]; then
-  if command -v systemctl >/dev/null 2>&1; then
+  ALREADY_RUNNING="$("$RESIDENTIAL_PYTHON" - "$SCRIPT_DIR" "$INSTALL_DIR" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import residential
+print('yes' if residential.running(Path(sys.argv[2])) else 'no')
+PY
+  )"
+  if [[ "$ALREADY_RUNNING" == yes ]]; then
+    info "mihomo 已运行，沿用现有启动方式。"
+  elif command -v systemctl >/dev/null 2>&1; then
     UNIT_DIR="$HOME/.config/systemd/user"
     mkdir -p "$UNIT_DIR"
-    cat > "$UNIT_DIR/mihomo.service" <<EOF
-[Unit]
-Description=mihomo proxy (user)
-After=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=${BIN_DIR}/mihomo -d ${INSTALL_DIR}
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
+    UNIT_NAME="$("$RESIDENTIAL_PYTHON" - "$SCRIPT_DIR" "$INSTALL_DIR" "$UNIT_DIR" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import residential as r
+root = Path(sys.argv[2])
+name = r.unit_name(root).replace('mihomo-residential-', 'mihomo-') + '.service'
+r.atomic_write(Path(sys.argv[3]) / name,
+    '[Unit]\nDescription=mihomo proxy (user)\nAfter=network-online.target\n\n'
+    '[Service]\nType=simple\nUMask=0077\n'
+    f'WorkingDirectory={r.unit_quote(root, command=False)}\n'
+    f'ExecStart={r.unit_quote(root / "bin/mihomo")} -d {r.unit_quote(root)}\n'
+    'Restart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n')
+print(name)
+PY
+    )"
     systemctl --user daemon-reload || warn "systemctl --user daemon-reload 失败"
-    systemctl --user enable --now mihomo.service || warn "启用/启动失败，可继续用 run.sh"
+    systemctl --user enable --now "$UNIT_NAME" || warn "用户服务不可用，将尝试普通用户后台启动。"
   else
     warn "未找到 systemctl，跳过 systemd --user。"
   fi
+fi
+
+info "启动并检查 mihomo 服务…"
+"$RUN_SH" || die "服务启动失败，请检查 $RUN_DIR/mihomo.log 后重新运行本脚本。"
+
+if [[ "$USE_RESIDENTIAL" =~ ^[Yy]$ ]]; then
+  info "检查当前代理链的出口 IP…"
+  bash "$SCRIPT_DIR/residential.sh" --install-dir "$INSTALL_DIR" verify \
+    --url "${MIHOMO_VERIFY_URL:-https://api.ipify.org}" || \
+    die "住宅配置已保存，但出口验证未通过。请检查住宅参数和当前机场节点后重新运行本脚本。"
+fi
+
+SETUP_TERMINALS="$(ask_yes_no '是否为新终端和 VSCode 设置代理并注册快捷命令？（Y/n）: ' Y)"
+if [[ "$SETUP_TERMINALS" == Y ]]; then
+  info "配置新终端和 VSCode 的代理…"
+  MIHOMO_PROXY_URL="http://127.0.0.1:$MIXED_PORT" MIHOMO_SOCKS_URL="socks5h://127.0.0.1:$MIXED_PORT" \
+    bash "$SCRIPT_DIR/setup_global_proxy.sh" >/dev/null
+  INSTALL_DIR="$INSTALL_DIR" bash "$SCRIPT_DIR/register.sh" >/dev/null
+  info "已配置。新开终端即可使用；已有 VSCode 远程会话需重新连接。"
 fi
 
 # =========================
 # Final
 # =========================
 echo
-info "安装完成 ✅"
-echo
-info "========== 使用说明 =========="
-echo
-echo "【启动和停止】"
-echo "  启动：  ${INSTALL_DIR}/run.sh"
-echo "  停止：  ${INSTALL_DIR}/stop.sh"
-echo "  状态：  ${INSTALL_DIR}/status.sh"
-echo "  重启：  ${INSTALL_DIR}/stop.sh && ${INSTALL_DIR}/run.sh"
-echo "  日志：  tail -f ${RUN_DIR}/mihomo.log"
-echo
-echo "【VSCode 端口转发设置】"
-echo "  1. 在VSCode中按 F1 或 Ctrl+Shift+P"
-echo "  2. 输入 \"Forward a Port\" 或 \"转发端口\""
-echo "  3. 输入端口号：${CTRL_PORT}"
-echo "  4. 转发成功后会在 VSCode 底部显示"
-echo
-echo "【yacd 可视化界面】"
-echo "  yacd 在线入口（任选其一）："
-echo "    https://yacd.metacubex.one"
-echo "    https://yacd.haishan.me"
-echo "  在 yacd 中填入："
-echo "    主机：127.0.0.1"
-echo "    端口：${CTRL_PORT}"
-echo "    密钥：${SECRET}"
-echo "  提示：如果通过VSCode端口转发，使用 localhost:${CTRL_PORT}"
-echo
-echo "【设置系统代理】"
-echo "  临时设置（当前终端）："
-echo "    source ${INSTALL_DIR}/proxy.sh"
-echo "  或者手动设置："
-echo "    export http_proxy=http://127.0.0.1:${MIXED_PORT}"
-echo "    export https_proxy=http://127.0.0.1:${MIXED_PORT}"
-echo "    export all_proxy=socks5://127.0.0.1:${MIXED_PORT}"
-echo
-echo "  永久设置（添加到 ~/.bashrc）："
-echo "    echo 'export http_proxy=http://127.0.0.1:${MIXED_PORT}' >> ~/.bashrc"
-echo "    echo 'export https_proxy=http://127.0.0.1:${MIXED_PORT}' >> ~/.bashrc"
-echo "    source ~/.bashrc"
-echo
-echo "【测试代理】"
-echo "  curl -x http://127.0.0.1:${MIXED_PORT} https://api.ipify.org"
-echo "  或设置代理后："
-echo "  curl https://api.ipify.org"
-echo
-echo "【快速切换节点】"
-echo "  命令行测速并切换： bash ~/tools/mihomo_install/nodes.sh"
-echo "  注册快捷命令后可直接执行： mihomo-nodes"
-echo "  也可以继续使用 yacd 界面切换节点"
-echo
-echo "【订阅更新】"
-echo "  订阅会每小时自动更新"
-echo "  代理节点每5分钟进行健康检查"
-echo "================================"
+info "安装完成，mihomo 已运行。"
+echo "  代理地址：HTTP/SOCKS5 127.0.0.1:${MIXED_PORT}"
+echo "  控制地址：127.0.0.1:${CTRL_PORT}"
+echo "  控制密钥：保存在 ${INSTALL_DIR}/config.yaml"
+echo "  订阅更新：$UPDATE_METHOD"
+if [[ "$USE_RESIDENTIAL" =~ ^[Yy]$ ]]; then
+  echo "  住宅出口：当前代理链已通过检测；所有可选节点均使用住宅代理链。"
+fi
+if [[ "$SETUP_TERMINALS" == Y ]]; then
+  echo "  新开终端即可自动使用代理；已有 VSCode 远程会话请重新连接。"
+fi
+echo "  管理命令：${INSTALL_DIR}/run.sh、stop.sh、status.sh"
+echo "  日志文件：${RUN_DIR}/mihomo.log"
+echo "  后续更换配置或补全安装，仍可运行本安装脚本。"

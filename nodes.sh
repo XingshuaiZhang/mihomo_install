@@ -228,6 +228,9 @@ echo "========================================="
 echo
 info "检测到 mihomo 安装目录: $INSTALL_DIR"
 info "代理组: $GROUP"
+if [[ -f "$INSTALL_DIR/residential-source.yaml" ]]; then
+  info "住宅模式：下列节点均经过固定住宅出口，延迟包含整条代理链"
+fi
 info "当前节点: ${CURRENT_NODE:-未知}"
 step "开始测速，共 ${#NODES[@]} 个节点，并发 ${CONCURRENCY}，单节点超时 ${TIMEOUT_MS}ms"
 echo

@@ -11,8 +11,9 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # 配置
-MIHOMO_DIR="${HOME}/tools/mihomo"
-MIXED_PORT="7890"
+MIHOMO_DIR="${INSTALL_DIR:-${HOME}/tools/mihomo}"
+MIXED_PORT="$(awk '/^mixed-port:/ {print $2; exit}' "$MIHOMO_DIR/config.yaml" 2>/dev/null || true)"
+MIXED_PORT="${MIXED_PORT:-7890}"
 
 info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -43,10 +44,10 @@ fi
 # 设置代理环境变量
 export http_proxy="http://127.0.0.1:${MIXED_PORT}"
 export https_proxy="http://127.0.0.1:${MIXED_PORT}"
-export all_proxy="socks5://127.0.0.1:${MIXED_PORT}"
+export all_proxy="socks5h://127.0.0.1:${MIXED_PORT}"
 export HTTP_PROXY="http://127.0.0.1:${MIXED_PORT}"
 export HTTPS_PROXY="http://127.0.0.1:${MIXED_PORT}"
-export ALL_PROXY="socks5://127.0.0.1:${MIXED_PORT}"
+export ALL_PROXY="socks5h://127.0.0.1:${MIXED_PORT}"
 
 # 测试连接
 if curl -s --connect-timeout 5 https://api.ipify.org >/dev/null 2>&1; then

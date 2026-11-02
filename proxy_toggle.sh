@@ -8,8 +8,8 @@
 # 该文件被 ~/.bashrc 与 ~/.profile 自动 source，
 # source 时默认开启代理（静默）。
 
-MIHOMO_PROXY_URL="http://127.0.0.1:7890"
-MIHOMO_SOCKS_URL="socks5://127.0.0.1:7890"
+MIHOMO_PROXY_URL="${MIHOMO_PROXY_URL:-http://127.0.0.1:7890}"
+MIHOMO_SOCKS_URL="${MIHOMO_SOCKS_URL:-socks5h://127.0.0.1:7890}"
 MIHOMO_NO_PROXY="localhost,127.0.0.1,::1"
 
 proxy_on() {
